@@ -10,6 +10,7 @@ Premise: A lightweight and extensible GUI for the Pi coding harness.
 - **Path A: RPC subprocess.** The GUI spawns `pi --mode rpc` and talks JSONL over stdin/stdout, using Pi's RPC protocol as the only transport.
 - **Shell: Tauri** (Rust + system webview). No Electron.
 - Pi is consumed as-is via an **app-managed runtime**: the GUI downloads, installs, and updates its own pi binary — revving pi does not require an app rebuild. Repo role: consumer of published Pi artifacts (GitHub Release binaries, npm metadata), not a `packages/gui` in the fork. The Pi copy in this repo is for reference and for prototyping upstreamable changes.
+- RPC client planning spec: [Pi-UI-rpc-client-spec.md](Pi-UI-rpc-client-spec.md).
 
 ## Why Path A works: Pi's mode architecture
 
