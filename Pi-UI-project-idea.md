@@ -9,7 +9,7 @@ Premise: A lightweight and extensible GUI for the Pi coding harness.
 
 - **Path A: RPC subprocess.** The GUI spawns `pi --mode rpc` and talks JSONL over stdin/stdout, using Pi's RPC protocol as the only transport.
 - **Shell: Tauri** (Rust + system webview). No Electron.
-- Pi is consumed as-is (user's install or a bundled pinned binary). No fork of Pi internals. The Pi copy in this repo is for reference and for prototyping upstreamable changes.
+- Pi is consumed as-is via an **app-managed runtime**: the GUI downloads, installs, and updates its own pi binary — revving pi does not require an app rebuild. Repo role: consumer of published Pi artifacts (GitHub Release binaries, npm metadata), not a `packages/gui` in the fork. The Pi copy in this repo is for reference and for prototyping upstreamable changes.
 
 ## Why Path A works: Pi's mode architecture
 
@@ -27,6 +27,26 @@ Premise: A lightweight and extensible GUI for the Pi coding harness.
 - Extension UI bridge: extension dialogs arrive as `extension_ui_request` JSON; the GUI answers with `extension_ui_response`. This is the template for rendering extension UI natively.
 - Not available over RPC: built-in TUI slash commands (`/settings`, `/hotkeys`, model/session selectors — they live in `interactive-mode.ts`). They are thin wrappers over exported APIs; reimplement as GUI-native panels.
 - No HTTP/WebSocket server mode exists upstream. If wanted later, wrap RPC/SDK ourselves (candidate to prototype in this repo and upstream).
+
+## Transport decision: stdio RPC over server mode
+
+Chosen: per-session stdio subprocess. A WebSocket/HTTP server mode was considered and deferred.
+
+Why stdio wins for this app:
+
+- It exists today, documented and maintained upstream (`docs/rpc.md`, `rpc-types.ts`, typed `RpcClient`). A server mode does not exist — it would be net-new upstream work before the app could even start.
+- Matches the Tauri model: Rust spawns and owns the child process; stdio pipes are the natural sidecar pattern. No port allocation, no auth tokens, no daemon lifecycle.
+- Security: nothing listens on a socket. A local server that can run bash and edit files needs authentication against other local processes — design surface Pi core deliberately does not have.
+- Fits the managed runtime: per-session subprocesses mean an update takes effect on the next session spawn. A long-running daemon would pin the *old* binary and force a daemon restart (killing its sessions) on every runtime update.
+- Session sharing with the TUI is already covered by the shared JSONL files — resume the same session from either frontend.
+
+What a server mode would add (revisit triggers):
+
+- Live multi-client attach (GUI + TUI watching the same running session simultaneously)
+- Sessions/agents that outlive the app (daemon model, background agents)
+- Remote/headless driving
+
+If these become real requirements: prototype in this repo's Pi copy and PR upstream. Hedge for later: keep the Rust client's transport behind a trait (stdio implementation now, socket framing later) so the command/event surface — identical either way — stays transport-agnostic.
 
 ## Session management
 
@@ -64,7 +84,19 @@ GUI-native reimplementation:
 
 - Rust core owns the pi subprocess: spawn, stdio, JSONL encode/decode, event fan-out to the webview via Tauri events; webview invokes Rust commands for RPC requests.
 - Pi ships as an npm package and as standalone Bun-compiled binaries (see release process in `AGENTS.md`). A Tauri sidecar can bundle the standalone binary, so the app does not require Node on the user's machine.
-- Frontend stack inside the webview is undecided (Svelte/React/Solid).
+- Frontend: **Svelte** (decided).
+
+## Runtime management
+
+Problem: a frozen bundled pi means every pi update requires an app release. Solution: the GUI manages its own pi runtime, installable and updatable from within the app.
+
+- **Runtime location**: app data dir, versioned — `<app-data>/runtime/<version>/` with a `current` pointer. Versioned dirs give atomic swaps and rollback; stale dirs are cleaned up once no running session uses them.
+- **First-run install**: download the platform archive from Pi's GitHub Release (`pi-darwin-arm64.tar.gz`, `pi-darwin-x64.tar.gz`, `pi-linux-x64.tar.gz`, `pi-linux-arm64.tar.gz`, `pi-windows-x64.zip`, `pi-windows-arm64.zip`), verify against the release's `SHA256SUMS`, extract. These are standalone Bun binaries — no Node required on the user's machine.
+- **Update check**: `https://pi.dev/api/latest-version` (the same endpoint `pi update --self` queries) or the GitHub Releases API. Surface "update available" in the UI; user-triggered by default, optional auto-update.
+- **Update flow**: download to a *new* versioned dir, verify checksum, flip `current`. Running sessions keep their already-spawned binary; new sessions pick up the new version. Never overwrite in place — this sidesteps Windows' locked-executable problem that forces Pi's own npm self-update into quarantine hacks (`packages/coding-agent/src/utils/windows-self-update.ts`).
+- **Protocol compatibility is the coupling cost**: the Rust RPC client implements a protocol that is versioned with pi. The GUI declares a supported pi version range, gates auto-updates on that range, and warns on mismatch. Source of truth: `rpc-types.ts` in the published `@earendil-works/pi-coding-agent` package (pinned version; keep the Rust serde types in sync, ideally with a sync test).
+- Optional escape hatch: "use system pi" mode pointing at the user's own install, with a version-compat warning.
+- Do not shell out to `pi update --self`: it is npm-oriented and unavailable for binary installs. The GUI owns the download.
 
 ## Feature ideas
 
@@ -91,7 +123,5 @@ Pi-only differentiators:
 
 ## Open decisions
 
-- Distribution: drive the user's installed pi vs bundle a pinned pi binary (sidecar).
-- This repo's role: pure consumer of published packages vs `packages/gui` inside the fork.
-- Frontend framework for the webview.
-- Whether to prototype a WebSocket/HTTP server mode for Pi and upstream it.
+- Frontend framework: decided — Svelte.
+- Server mode: deferred (see Transport decision). Revisit if live multi-client attach or background/daemon sessions become real requirements.
